@@ -1,6 +1,4 @@
 #include <stdio.h>
-#include <string.h>
-
 
 
 int main(int argc, char *argv[]) {
@@ -25,8 +23,8 @@ int main(int argc, char *argv[]) {
         if (i % 16 == 0) printf("\n");
 
     }
-
-    printf("\n\nПервый раздел:\n");
+    printf("\n\nDisk signature: %.2X %.2X %.2X %.2X\n", buffer[440], buffer[441], buffer[442], buffer[443]);
+    printf("Первый раздел:\n");
     for (i = 446; i < 462; i++) {
         printf("%.2X ", buffer[i]);
     }
@@ -52,6 +50,7 @@ int main(int argc, char *argv[]) {
     for (i = 494; i < 510; i++) {
         printf("%.2X ", buffer[i]);
     }
+    printf("\n");
 
 
     return 0;
