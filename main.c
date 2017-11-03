@@ -1,12 +1,19 @@
 #include <stdio.h>
 
-int AttributeParser(unsigned char *file, int attributeOffset){
-    int headerSize=24;
+int AttributeParser(unsigned char *file, int attributeOffset) {
+
+    if ((int) file[attributeOffset + 4] == 0x00 || file[attributeOffset] == 0xFF) {
+        printf("Аттрибуты закончились\n");
+        return -1;
+    }
+    int headerSize = 24;
     printf("Смещение аттрибута: %i\n", attributeOffset);
-    printf("Размер аттрибута: %i\n", (int)file[attributeOffset+4]);
+    int attributeSize=(int) file[attributeOffset + 4];
+    printf("Размер аттрибута: %i\n", attributeSize);
+
     printf("Тип аттрибута: ");
 
-    switch (file[attributeOffset]){
+    switch (file[attributeOffset]) {
         case 0x10:
             printf("$STANDARD_INFORMATION \n");
             break;
@@ -15,43 +22,54 @@ int AttributeParser(unsigned char *file, int attributeOffset){
             break;
         case 0x30:
             printf("$FILE_NAME\n");
-            printf("Длина имени: %i символов\n", (int)file[attributeOffset+headerSize+64]);
+            printf("Длина имени: %i символов\n", (int) file[attributeOffset + headerSize + 64]);
             printf("Имя файла: ");
-            for (int i =0; i<(int)file[attributeOffset+headerSize+64]*2; i++){
-                printf("%c", file[attributeOffset+headerSize+66+i]);
+            for (int i = 0; i < (int) file[attributeOffset + headerSize + 64] * 2; i++) {
+                printf("%c", file[attributeOffset + headerSize + 66 + i]);
             }
             char buf;
-
-
             break;
+        case 0x50:
+            printf("$SECURITY_DESCRIPTOR\n");
+            break;
+
         case 0x80:
             printf("$DATA\n");
+            for (int i=0; i<attributeSize-headerSize-4; i++){
+                printf("%c", file[attributeOffset+headerSize+i]);
+            }
+            break;
+        case 0x90:
+            printf("$INDEX_ROOT\n");
+            //printf("***************************************************************************************************\n");
+
             break;
         default:
             printf("Unable to identify %.2x\n", file[attributeOffset]);
 
     }
+    printf("\n*********\n");
 
-
-    return attributeOffset + (int)file[attributeOffset+4];
+    return attributeOffset + (int) file[attributeOffset + 4];
 
 }
 
-void FileParser(unsigned char *file) {
+void FileParser(unsigned char *file, int fileSize) {
     int i;
     int nextAttributeOffset;
     char sizeBytes[4];
-    int actualSize=0;
-    i=0;
-    while (file[i]!=0xff && file[i+1]!=0xff && file[i+2]!=0xff && file[i+3]!=0xff){
+    int actualSize = 0;
+    i = 0;
+    while (i < fileSize) {
         printf("[%i]0x%.2x ", i, file[i]);
         //printf("0x%.2x ", file[i]);
 
-        if ((i+1)%4==0) printf("  ");
-        if (i!=0 && (i+1)%16==0) printf("\n");
+        if ((i + 1) % 4 == 0) printf("  ");
+        if (i != 0 && (i + 1) % 16 == 0) printf("\n");
         i++;
 
     }
+
     switch (file[22]) {
         case 0x00:
             printf("\nФайловая запись не используется\n");
@@ -61,12 +79,15 @@ void FileParser(unsigned char *file) {
             break;
         case 0x02:
             printf("\nФайловая запись используется и описывает каталог\n");
+
             break;
         default:
             printf("\nОшибка определения типа файловой записи\n");
     }
     printf("Реальный размер файловой записи: 0x%.2x 0x%.2x 0x%.2x 0x%.2x\n", file[24], file[25], file[26],
            file[27]);
+    actualSize = file[25] * 256 + file[24];
+    printf("Размер в байтах: %i\n", actualSize);
     printf("Выделенный размер файловой записи: %.2x %.2x %.2x %.2x\n", file[28], file[29], file[30],
            file[31]);
 
@@ -81,12 +102,16 @@ void FileParser(unsigned char *file) {
     printf("Ссылка на базовую файловую запись или ноль, если данная файловая запись базовая: ");
     for (i = 0; i < 8; i++) printf("%.2x ", file[32 + i]);
     printf("\nИдентификатор следующего атрибута: %.2x\n", file[40]);
-
     printf("\n---Атрибуты---\n");
-    nextAttributeOffset = AttributeParser(file, (int)file[20]);
-    printf("\nNext attribute starts at: %i\n", nextAttributeOffset);
-    nextAttributeOffset = AttributeParser(file, nextAttributeOffset);
-    printf("\nNext attribute starts at: %i\n", nextAttributeOffset);
+    nextAttributeOffset = AttributeParser(file, (int) file[20]);
+    while (nextAttributeOffset != -1) {
+        nextAttributeOffset = AttributeParser(file, nextAttributeOffset);
+//        printf("\nNext attribute starts at: %i\n", nextAttributeOffset);
+    }
+//    nextAttributeOffset = AttributeParser(file, (int)file[20]);
+//    printf("\nNext attribute starts at: %i\n", nextAttributeOffset);
+//    nextAttributeOffset = AttributeParser(file, nextAttributeOffset);
+//    printf("\nNext attribute starts at: %i\n", nextAttributeOffset);
 
 
 }
@@ -98,7 +123,7 @@ int main(int argc, char *argv[]) {
     int i;
     int j, byteCount;
     unsigned char buffer[1500000];
-    unsigned char file[512];
+    unsigned char file[1000];
 
     diskImage = fopen(argv[1], "rb");
     out = fopen("file.txt", "w");
@@ -124,26 +149,29 @@ int main(int argc, char *argv[]) {
 
         }
 
+
         if (buffer[i] == 0x46 && buffer[i + 1] == 0x49 && buffer[i + 2] == 0x4c && buffer[i + 3] == 0x45) {
+            int fileSize = buffer[i + 25] * 256 + buffer[i + 24] - 4;
             numOfFiles++;
-            printf("\n\nFile %i:       ", numOfFiles);
+            printf("\n\nFile %i, size: %i       ", numOfFiles, fileSize);
             printf("%08x\n", a);
             j = i;
             byteCount = 0;
-            while (!(buffer[j] == 0xFF && buffer[j + 1] == 0xFF && buffer[j + 2] == 0xFF && buffer[j + 3] == 0xFF && buffer[j+4]==0x00)) {
+            //while (!(buffer[j] == 0xFF && buffer[j + 1] == 0xFF && buffer[j + 2] == 0xFF && buffer[j + 3] == 0xFF && buffer[j+4]==0x00)) {
+            while (j < (i + fileSize)) {
 
                 file[byteCount] = buffer[j];
                 j++;
                 byteCount++;
             }
-            printf ("Stopped reading file: %.2x %.2x %.2x %.2x\n", buffer[j], buffer[j+1],buffer[j+2], buffer[j+3] );
+
             for (int k = 0; k < 4; k++) {
                 file[byteCount + k] = 0xff;
             }
 
             //for (int k = 0; k < byteCount+4; k++) printf("%.2x ", file[k]);
 
-            FileParser(file);
+            FileParser(file, fileSize);
 
 
         }
