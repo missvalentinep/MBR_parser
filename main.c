@@ -1,11 +1,16 @@
 #include <stdio.h>
+#include <memory.h>
+#include <stdbool.h>
+#include <stdlib.h>
+
+bool DEBUG = true;
 
 
 struct Attribute {
     int attributeOffset;
     unsigned char attributeType;
     int nextAttributeOffset;
-    unsigned char attributeContent[50];    // 25 - only for parent location and name, change later!!!
+    unsigned char attributeContent[50];    // 50 - only for parent location and name, change later!!!
 
 };
 
@@ -16,11 +21,12 @@ struct File {
     int numberInMFT;
     struct Attribute attributes[10];
     int parentNumberInMFT;
-    unsigned char fileName[50];
+    char fileName[50];
     int nameLength;
+    char fullPath[100];
+    struct File *parent;
 
 };
-
 
 
 struct Attribute AttributeParser(unsigned char *file, int attributeOffset) {
@@ -61,7 +67,7 @@ struct Attribute AttributeParser(unsigned char *file, int attributeOffset) {
             printf("Длина имени: %i символов\n", (int) file[attributeOffset + headerSize + 64]);
             printf("Имя файла: ");
 
-            newAttribute.attributeContent[4] =  file[attributeOffset + headerSize + 64];  //filename length
+            newAttribute.attributeContent[4] = file[attributeOffset + headerSize + 64];  //filename length
 
             for (int i = 0; i < (int) file[attributeOffset + headerSize + 64] * 2; i++) {
                 printf("%c", file[attributeOffset + headerSize + 66 + i]);
@@ -120,17 +126,22 @@ struct File FileParser(struct File file) {
     actualSize = file.contents[25] * 256 + file.contents[24];
     file.sizeInBytes = actualSize;
 //    while (i < actualSize-4) {
-    while (i < fileSize) {
-        printf("[%i]0x%.2x ", i, file.contents[i]);
-        // printf("0x%.2x ", file[i]);
 
-        if ((i + 1) % 4 == 0) printf("  ");
-        if (i != 0 && (i + 1) % 16 == 0) printf("\n");
-        i++;
+    if (DEBUG) {
 
+        while (i < fileSize) {
+//            printf("[%i]0x%.2x ", i, file.contents[i]);
+             printf("0x%.2x ", file.contents[i]);
+
+            if ((i + 1) % 4 == 0) printf("  ");
+            if (i != 0 && (i + 1) % 16 == 0) printf("\n");
+            i++;
+
+        }
     }
 
-    if (file.contents[8] == 0x01) printf("NON RESIDENT!!!!!!!!!!!!!!!!!!!!!!!!!****************************************\n");
+    if (file.contents[8] == 0x01)
+        printf("NON RESIDENT!!!!!!!!!!!!!!!!!!!!!!!!!****************************************\n");
 
     switch (file.contents[22]) {
         case 0x00:
@@ -147,11 +158,13 @@ struct File FileParser(struct File file) {
             printf("");
             //printf("\nОшибка определения типа файловой записи\n");
     }
-    printf("Реальный размер файловой записи: 0x%.2x 0x%.2x 0x%.2x 0x%.2x\n", file.contents[24], file.contents[25], file.contents[26],
+    printf("Реальный размер файловой записи: 0x%.2x 0x%.2x 0x%.2x 0x%.2x\n", file.contents[24], file.contents[25],
+           file.contents[26],
            file.contents[27]);
     actualSize = file.contents[25] * 256 + file.contents[24];
     printf("Размер в байтах: %i\n", actualSize);
-    printf("Выделенный размер файловой записи: %.2x %.2x %.2x %.2x\n", file.contents[28], file.contents[29], file.contents[30],
+    printf("Выделенный размер файловой записи: %.2x %.2x %.2x %.2x\n", file.contents[28], file.contents[29],
+           file.contents[30],
            file.contents[31]);
 
 
@@ -179,12 +192,22 @@ struct File FileParser(struct File file) {
         numOfAttributes++;
 
         if (newAttribute.attributeType == 0x30) {     //Adding parent to the file info
-            parentNumber = newAttribute.attributeContent[0] + newAttribute.attributeContent[1]*256;
+            parentNumber = newAttribute.attributeContent[0] + newAttribute.attributeContent[1] * 256;
             file.parentNumberInMFT = parentNumber;
-            file.nameLength = ((int) newAttribute.attributeContent[4] )* 2;
-            for (int j=0; j< file.nameLength; j++){
-                file.fileName[j] = newAttribute.attributeContent[5 + j];
+            file.nameLength = ((int) newAttribute.attributeContent[4]) * 2;
+
+            //Через символ идет пустой символ, искажает вид файла, поэтому убираем
+            for (int j = 0; j < file.nameLength; j += 2) {
+                file.fileName[j / 2] = newAttribute.attributeContent[5 + j];
+
             }
+
+            //заполняем остаток имени пустыми символами
+
+            for (int j = file.nameLength / 2; j < file.nameLength; j++) {
+                file.fileName[j] = '\0';
+            }
+
         }
 //        printf("\nNext attribute starts at: %i\n", nextAttributeOffset);
     }
@@ -234,24 +257,38 @@ int MBRParser(unsigned char *MBR) {
 
 }
 
-void printParentFile(int index, struct File arrayOfFiles[100]){
+struct File printParentFile(int index, struct File arrayOfFiles[100], struct File originalFile) {
 
     struct File currentFile = arrayOfFiles[index];
 
-    if (currentFile.parentNumberInMFT == -1) printf("No directory\n");
-    else {
+//    if (strcmp(originalFile.fileName, "") == 0){
+//
+//        return originalFile;
+//    }
 
-
-        for (int i = 0; i < currentFile.nameLength; i++) {
-            printf("%c", currentFile.fileName[i]);
-        }
-        printf("/");
-
-
-        if (currentFile.fileName[0] != '.') {
-            printParentFile(currentFile.parentNumberInMFT, arrayOfFiles);
-        }
+    if (currentFile.parentNumberInMFT == -1) {
+        strcat(originalFile.fullPath, "No directory");
+        return originalFile;
     }
+
+
+    char *str1 = originalFile.fullPath;
+    char *str2 = currentFile.fileName;
+
+
+    if (strcmp(originalFile.fullPath, "") != 0){        // После самого файла не печатает слеш
+        strcat(str2, "/");
+    }
+
+    strcat(str2, str1);
+
+    strcpy(originalFile.fullPath, str2);
+
+    if (currentFile.fileName[0] != '.') {
+        return printParentFile(currentFile.parentNumberInMFT, arrayOfFiles, originalFile);
+    }
+
+    return originalFile;
 
 }
 
@@ -302,18 +339,24 @@ int main(int argc, char *argv[]) {
             break;
         }
         printf("\nФайл номер: %i\n", fileCount);
-        newFile =  FileParser(newFile);
+        newFile = FileParser(newFile);
         arrayOfFiles[i] = newFile;
         fileCount++;
 
 
-
     }
 
-    for (int i =0; i<fileCount; i++){
+    struct File currentFile;
+
+    for (int i = 0; i < fileCount; i++) {
         printf("\n %i File Path:\n", i);
-        printParentFile(i, arrayOfFiles);
+        currentFile =  printParentFile(i, arrayOfFiles, arrayOfFiles[i]);
+        printf("%s \n", currentFile.fullPath);
     }
+
+//    currentFile = printParentFile(13, arrayOfFiles, arrayOfFiles[13]);
+//    printf("%s \n", currentFile.fullPath);
+
 
 
 
