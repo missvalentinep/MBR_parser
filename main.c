@@ -1,16 +1,22 @@
 #include <stdio.h>
 #include <memory.h>
 #include <stdbool.h>
-#include <stdlib.h>
+#include <math.h>
 
-bool DEBUG = true;
+
+bool DEBUG = false;
+FILE *diskImage;
+int startOfPartition;
+int startOfMft;
+int clusterSize = 4096;
+const int SIZE_OF_CHILDREN_ARRAY = 100;
 
 
 struct Attribute {
     int attributeOffset;
     unsigned char attributeType;
     int nextAttributeOffset;
-    unsigned char attributeContent[50];    // 50 - only for parent location and name, change later!!!
+    unsigned char attributeContent[50];    //TODO: 50 - only for parent location and name, change later!!!
 
 };
 
@@ -24,9 +30,14 @@ struct File {
     char fileName[50];
     int nameLength;
     char fullPath[100];
-    struct File *parent;
+    int childrenNumbersInMFT[SIZE_OF_CHILDREN_ARRAY];
+    int numOfChildren;
 
 };
+
+struct File getChildrenForDirectory(struct File file, struct Attribute attribute);
+
+struct File indexAllocationParser(struct File file, struct Attribute attribute);
 
 
 struct Attribute AttributeParser(unsigned char *file, int attributeOffset) {
@@ -42,7 +53,7 @@ struct Attribute AttributeParser(unsigned char *file, int attributeOffset) {
     printf("Смещение аттрибута: %i\n", attributeOffset);
     newAttribute.attributeOffset = attributeOffset;
 
-    int attributeSize = (int) file[attributeOffset + 4];
+    int attributeSize = file[attributeOffset + 4] + file[attributeOffset + 5] * 256;
     printf("Размер аттрибута: %i\n", attributeSize);
 
     printf("Тип аттрибута: ");
@@ -105,7 +116,7 @@ struct Attribute AttributeParser(unsigned char *file, int attributeOffset) {
     }
     printf("\n*********\n");
 
-    newAttribute.nextAttributeOffset = attributeOffset + (int) file[attributeOffset + 4];
+    newAttribute.nextAttributeOffset = attributeOffset + attributeSize;
     return newAttribute;
 
 }
@@ -119,6 +130,9 @@ struct File FileParser(struct File file) {
     i = 0;
     int parentNumber = -1;
 
+    bool indexRootFound = false;
+    bool indexAllocationFound = false;
+
     file.parentNumberInMFT = parentNumber; //default is root directory
     file.nameLength = 0; //default name length is 0
 
@@ -130,8 +144,8 @@ struct File FileParser(struct File file) {
     if (DEBUG) {
 
         while (i < fileSize) {
-//            printf("[%i]0x%.2x ", i, file.contents[i]);
-             printf("0x%.2x ", file.contents[i]);
+            printf("[%i]0x%.2x ", i, file.contents[i]);
+//            printf("0x%.2x ", file.contents[i]);
 
             if ((i + 1) % 4 == 0) printf("  ");
             if (i != 0 && (i + 1) % 16 == 0) printf("\n");
@@ -139,6 +153,13 @@ struct File FileParser(struct File file) {
 
         }
     }
+
+
+    for (int i = 0; i<SIZE_OF_CHILDREN_ARRAY; i++){
+        file.childrenNumbersInMFT[i] = 0;
+    }
+
+    file.numOfChildren = 0;
 
     if (file.contents[8] == 0x01)
         printf("NON RESIDENT!!!!!!!!!!!!!!!!!!!!!!!!!****************************************\n");
@@ -208,14 +229,153 @@ struct File FileParser(struct File file) {
                 file.fileName[j] = '\0';
             }
 
+        } else if (newAttribute.attributeType == 0x90) {
+
+            file = getChildrenForDirectory(file, newAttribute);
+            indexRootFound = true;
+
+        } else if (newAttribute.attributeType == 0xa0) {
+            file = indexAllocationParser(file, newAttribute);
+            indexAllocationFound = true;
+
         }
+
+
 //        printf("\nNext attribute starts at: %i\n", nextAttributeOffset);
     }
+
+//    if (indexRootFound && !indexAllocationFound){
+//        file = getChildrenForDirectory(file, newAttribute);
+//
+//    }
 
 
     return file;
 }
 
+
+struct File getChildrenForDirectory(struct File file, struct Attribute attribute) {
+
+
+    int residencyFlagOffset = 9;
+    int nameLengthOffset = 9;
+    int nameLength = file.contents[attribute.attributeOffset + nameLengthOffset];
+//    printf("attribute offset: %i, name offset: %i", attribute.attributeOffset,
+//           attribute.attributeOffset + nameLengthOffset);
+    int indexEntryOffset = 32;
+    int indexEntrySize;
+
+    int attributeBodyOffset = 24 + nameLength * 2;
+
+    int attributeBody = attribute.attributeOffset + attributeBodyOffset;
+
+    int fileReference = attributeBody + indexEntryOffset;
+
+//    printf("\n!!!!!!!!!!!!!!!!!!!!!!!First file reference: %i\n", file.contents[fileReference]);
+//    indexEntrySize = file.contents[fileReference + 8];
+    while (file.contents[fileReference] != 0) {
+        file.childrenNumbersInMFT[file.numOfChildren] = file.contents[fileReference] + file.contents[fileReference + 1] * 256;
+        printf("\n!!!!!!!!!!!!!!!!!!!!!!! File reference: %i\n",
+               file.contents[fileReference] + file.contents[fileReference + 1] * 256);
+        indexEntrySize = file.contents[fileReference + 8];
+        fileReference += indexEntrySize;
+        file.numOfChildren++;
+    }
+
+    return file;
+
+}
+
+struct File indexAllocationParser(struct File file,
+                                  struct Attribute attribute) { // TODO: НУЖНО СДЕЛАТЬ ЧТОБ НЕСКОЛЬКО ПОСЛЕДОВАТЕЛЬНОСТЕЙ СЧИТЫВАЛ
+
+
+    int nameLength = file.contents[attribute.attributeOffset + 9];
+    int dataRunsOffset = attribute.attributeOffset + nameLength * 2 + 64;
+    if (DEBUG) printf("\nData Runs start at: %i\n", dataRunsOffset);
+    unsigned char dataRunHeader = 0x90;
+    int lengthOfOffset;
+    int offsetAsInteger;
+
+
+    while (1) {
+        dataRunHeader = file.contents[dataRunsOffset];
+
+        if (dataRunHeader == 0x00) {
+            break;
+        }
+        offsetAsInteger = 0;
+
+        lengthOfOffset = (int) dataRunHeader / 16;
+        if (DEBUG) printf("\nLength of offset: %i\n", lengthOfOffset);
+        unsigned char offset[lengthOfOffset];
+
+        dataRunsOffset += 2;
+        for (int i = 0; i < lengthOfOffset; i++) {
+            offset[i] = file.contents[dataRunsOffset];
+            printf("%.2x\n", offset[i]);
+            dataRunsOffset++;
+        }
+
+        printf("\n");
+
+        for (int i = lengthOfOffset - 1; i >= 0; i--) {
+            offsetAsInteger += offset[i] * (int) pow(256, i);
+        }
+
+        unsigned char indxEntrySize[4];
+        int bufferSize = 0;
+
+        fseek(diskImage, offsetAsInteger * clusterSize + startOfPartition + 28, SEEK_SET);
+        fread(indxEntrySize, 1, 4, diskImage); // Размер INDX Entry
+
+        for (int i = 3; i >= 0; i--) {
+            bufferSize += indxEntrySize[i] * (int) pow(256, i);
+        }
+        unsigned char buffer[bufferSize];
+
+        fseek(diskImage, offsetAsInteger * clusterSize + startOfPartition, SEEK_SET);
+
+        fread(buffer, 1, bufferSize, diskImage);
+
+        int firstIndexEntryOffset = 0;
+
+        for (int i = 3; i >= 0; i--) {
+            firstIndexEntryOffset += buffer[24 + i] * (int) pow(256, i);
+        }
+
+        firstIndexEntryOffset += 24;
+
+        int fileReference = firstIndexEntryOffset;
+
+        int indexEntrySize = 0;
+
+        while (fileReference < bufferSize) {
+
+            printf("!!!!!!!!! File reference: %i\n", buffer[fileReference] + buffer[fileReference + 1] * 256);
+            file.childrenNumbersInMFT[file.numOfChildren] = buffer[fileReference] + buffer[fileReference + 1] * 256;
+            indexEntrySize = buffer[fileReference + 8];
+            indexEntrySize += buffer[fileReference + 9] * 256;
+            fileReference += indexEntrySize;
+
+            file.numOfChildren++;
+        }
+//        int i = 0;
+//        while (i < bufferSize) {
+//            printf("[%i]0x%.2x ", i, buffer[i]);
+////            printf("0x%.2x ", file.contents[i]);
+//
+//            if ((i + 1) % 4 == 0) printf("  ");
+//            if (i != 0 && (i + 1) % 16 == 0) printf("\n");
+//            i++;
+//        }
+
+
+    }
+
+    return file;
+
+}
 
 int MBRParser(unsigned char *MBR) {
     int i;
@@ -276,7 +436,7 @@ struct File printParentFile(int index, struct File arrayOfFiles[100], struct Fil
     char *str2 = currentFile.fileName;
 
 
-    if (strcmp(originalFile.fullPath, "") != 0){        // После самого файла не печатает слеш
+    if (strcmp(originalFile.fullPath, "") != 0) {        // После самого файла не печатает слеш
         strcat(str2, "/");
     }
 
@@ -294,14 +454,14 @@ struct File printParentFile(int index, struct File arrayOfFiles[100], struct Fil
 
 int main(int argc, char *argv[]) {
 
-    FILE *diskImage;
+
     FILE *out;
     int i;
     int j, byteCount;
     unsigned char MBR[512];
     unsigned char buffer[50];
     unsigned char file[1024];
-    int startOfPartition;
+
     struct File arrayOfFiles[100];
 
     diskImage = fopen(argv[1], "rb");
@@ -311,24 +471,26 @@ int main(int argc, char *argv[]) {
     fread(MBR, 1, 512, diskImage);
     printf("Read $MBR\n");
     startOfPartition = MBRParser(MBR);
+    printf("Start of partition: %i\n", startOfPartition);
 
 
     fseek(diskImage, startOfPartition, SEEK_SET);
     fread(buffer, 1, 50, diskImage);
 
     printf("\n");
-    int clusterSize;
+
     int sectorSize = 512;
 
     clusterSize = buffer[13] * sectorSize;
+    printf("Cluster size: %i\n", clusterSize);
 
-    int startOfMft = buffer[48] * clusterSize + startOfPartition;
+    startOfMft = buffer[48] * clusterSize + startOfPartition;
 
     printf("Start of MFT: %i\n", startOfMft);
     fseek(diskImage, startOfMft, SEEK_SET);
     int fileCount = 0;
     for (i = 0; i < 100; i++) {    //100 файлов типо считывает???
-
+        fseek(diskImage, startOfMft + 1024 * fileCount, SEEK_SET);
         struct File newFile;
         newFile.numberInMFT = fileCount; //Record number in MFT
 
@@ -346,12 +508,12 @@ int main(int argc, char *argv[]) {
 
     }
 
-    struct File currentFile;
+
 
     for (int i = 0; i < fileCount; i++) {
         printf("\n %i File Path:\n", i);
-        currentFile =  printParentFile(i, arrayOfFiles, arrayOfFiles[i]);
-        printf("%s \n", currentFile.fullPath);
+        arrayOfFiles[i] = printParentFile(i, arrayOfFiles, arrayOfFiles[i]);
+        printf("%s \n", arrayOfFiles[i].fullPath);
     }
 
 //    currentFile = printParentFile(13, arrayOfFiles, arrayOfFiles[13]);
